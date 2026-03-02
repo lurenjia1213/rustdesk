@@ -4141,10 +4141,13 @@ async fn test_udp_uat(
     udp_port: Arc<Mutex<u16>>,
     mut stop_udp_rx: oneshot::Receiver<()>,
 ) -> ResultType<()> {
-    // Do NOT use test_nat_ipv4() (STUN) here. It creates a separate socket with
-    // a different local port, so its external port differs from udp_socket's.
-    // Under cone NAT, using the wrong port causes hole-punch failure.
-    // Only trust the rendezvous server's TestNatResponse for udp_socket's port.
+    //If a port is obtained from STUN, this port will be used on the socket for communication with the peer.
+    let (tx, mut rx) = oneshot::channel::<_>();
+    tokio::spawn(async {
+        if let Ok(v) = crate::test_nat_ipv4().await {
+            tx.send(v).ok();
+        }
+    });
 
     let start = Instant::now();
     let mut msg_out = RendezvousMessage::new();
@@ -4168,6 +4171,11 @@ async fn test_udp_uat(
 
     loop {
         tokio::select! {
+            Ok((addr, server)) = &mut rx => {
+                *udp_port.lock().unwrap() = addr.port();
+                log::debug!("UDP NAT test received response from {}: {}", addr, server);
+                break;
+            }
             _ = &mut stop_udp_rx => {
                 log::debug!("UDP NAT test received stop signal after {} packets", packets_sent);
                 break;

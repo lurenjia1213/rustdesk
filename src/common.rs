@@ -2301,6 +2301,7 @@ async fn stun_probe_on_socket(
 /// Under NAT, the local and external addresses/ports may differ.
 pub async fn get_ipv6_socket() -> Option<(Arc<UdpSocket>, bytes::Bytes)> {
     fn is_usable_global_ipv6(addr: SocketAddr) -> bool {
+        //test_ipv6里面做了这个操作，所以说会失败也不意外
         if let std::net::IpAddr::V6(ip) = addr.ip() {
             !ip.is_loopback()
                 && !ip.is_unspecified()
