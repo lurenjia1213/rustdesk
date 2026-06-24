@@ -509,23 +509,72 @@ impl Client {
                             relay_server = ph.relay_server;
                             peer_addr = AddrMangle::decode(&ph.socket_addr);
                             feedback = ph.feedback;
-                            let s = udp.0.take();
-                            if ph.is_udp && s.is_some() {
-                                if let Some(s) = s {
-                                    allow_err!(s.connect(peer_addr).await);
-                                    udp.0 = Some(s);
-                                }
-                            }
-                            let s = ipv6.0.take();
-                            if !ph.socket_addr_v6.is_empty() && s.is_some() {
-                                let addr = AddrMangle::decode(&ph.socket_addr_v6);
-                                if addr.port() > 0 {
-                                    if let Some(s) = s {
-                                        allow_err!(s.connect(addr).await);
-                                        ipv6.0 = Some(s);
+                            // Run IPv4 and IPv6 UDP connects in parallel with timeout,
+                            // so a stuck IPv6 connect doesn't delay the IPv4 path.
+                            let s_udp = udp.0.take();
+                            let s_ipv6 = ipv6.0.take();
+                            let (udp_result, ipv6_result) = tokio::join!(
+                                async {
+                                    if ph.is_udp {
+                                        if let Some(s) = s_udp {
+                                            match tokio::time::timeout(
+                                                Duration::from_secs(3),
+                                                s.connect(peer_addr),
+                                            )
+                                            .await
+                                            {
+                                                Ok(Ok(())) => return Some(s),
+                                                Ok(Err(e)) => {
+                                                    log::warn!(
+                                                        "IPv4 UDP connect to {} failed: {}",
+                                                        peer_addr, e
+                                                    )
+                                                }
+                                                Err(_) => {
+                                                    log::warn!(
+                                                        "IPv4 UDP connect to {} timed out",
+                                                        peer_addr
+                                                    )
+                                                }
+                                            }
+                                        }
                                     }
+                                    None
+                                },
+                                async {
+                                    if !ph.socket_addr_v6.is_empty() {
+                                        if let Some(s) = s_ipv6 {
+                                            let addr =
+                                                AddrMangle::decode(&ph.socket_addr_v6);
+                                            if addr.port() > 0 {
+                                                match tokio::time::timeout(
+                                                    Duration::from_secs(3),
+                                                    s.connect(addr),
+                                                )
+                                                .await
+                                                {
+                                                    Ok(Ok(())) => return Some(s),
+                                                    Ok(Err(e)) => {
+                                                        log::warn!(
+                                                            "IPv6 UDP connect to {} failed: {}",
+                                                            addr, e
+                                                        )
+                                                    }
+                                                    Err(_) => {
+                                                        log::warn!(
+                                                            "IPv6 UDP connect to {} timed out",
+                                                            addr
+                                                        )
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    None
                                 }
-                            }
+                            );
+                            udp.0 = udp_result;
+                            ipv6.0 = ipv6_result;
                             log::info!("{} Hole Punched {} = {}", punch_type, peer, peer_addr);
                             break;
                         }
